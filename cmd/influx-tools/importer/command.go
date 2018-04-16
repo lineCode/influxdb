@@ -10,6 +10,7 @@ import (
 	"github.com/influxdata/influxdb/tsdb/engine/tsm1"
 
 	"github.com/influxdata/influxdb/cmd/influx-tools/internal/format/binary"
+	"github.com/influxdata/influxdb/cmd/influx-tools/internal/profile"
 	"github.com/influxdata/influxdb/cmd/influx-tools/server"
 	"github.com/influxdata/influxdb/services/meta"
 	"go.uber.org/zap"
@@ -30,6 +31,9 @@ type Command struct {
 	buildTSI        bool
 	replace         bool
 	drop            bool
+
+	cpuProfile string
+	memProfile string
 }
 
 // NewCommand returns a new instance of Command.
@@ -51,6 +55,10 @@ func (cmd *Command) Run(args []string) (err error) {
 	if err != nil {
 		return err
 	}
+
+	p := profile.NewProfiler(cmd.cpuProfile, cmd.memProfile, cmd.Stderr)
+	p.StartProfile()
+	defer p.StopProfile()
 
 	i := NewImporter(cmd.server.MetaClient(), cmd.database, cmd.server.TSDBConfig().Dir, cmd.buildTSI, cmd.Logger)
 
@@ -123,6 +131,8 @@ func (cmd *Command) Run(args []string) (err error) {
 func (cmd *Command) parseFlags(args []string) error {
 	fs := flag.NewFlagSet("import", flag.ContinueOnError)
 	fs.StringVar(&cmd.configPath, "config", "", "Config file")
+	fs.StringVar(&cmd.cpuProfile, "cpuprofile", "", "")
+	fs.StringVar(&cmd.memProfile, "memprofile", "", "")
 	fs.StringVar(&cmd.database, "database", "", "Database name")
 	fs.StringVar(&cmd.retentionPolicy, "rp", "", "Retention policy")
 	fs.DurationVar(&cmd.shardDuration, "shard-duration", time.Hour*24*7, "Retention policy shard duration")
