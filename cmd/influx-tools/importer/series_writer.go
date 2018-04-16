@@ -20,27 +20,17 @@ type seriesWriter struct {
 	idx             seriesIndex
 }
 
-func NewInMemSeriesWriter(db string, dataPath string, shardPath string, shardId int, buf []byte) (*seriesWriter, error) {
-	sfile := tsdb.NewSeriesFile(filepath.Join(dataPath, tsdb.SeriesFileDirectory))
-	if err := sfile.Open(); err != nil {
-		return nil, err
-	}
-
+func NewInMemSeriesWriter(sfile *tsdb.SeriesFile, db string, dataPath string, shardPath string, shardId int, buf []byte) (*seriesWriter, error) {
 	return &seriesWriter{seriesBatchSize: seriesBatchSize, sfile: sfile, idx: &seriesFileAdapter{sf: sfile, buf: buf}}, nil
 }
 
-func NewTSI1SeriesWriter(db string, dataPath string, shardPath string, shardId int) (*seriesWriter, error) {
-	sfile := tsdb.NewSeriesFile(filepath.Join(dataPath, tsdb.SeriesFileDirectory))
-	if err := sfile.Open(); err != nil {
-		return nil, err
-	}
-
+func NewTSI1SeriesWriter(sfile *tsdb.SeriesFile, db string, dataPath string, shardPath string, shardId int) (*seriesWriter, error) {
 	ti := tsi1.NewIndex(sfile, db, tsi1.WithPath(filepath.Join(shardPath, strconv.Itoa(shardId), "index")))
 	if err := ti.Open(); err != nil {
 		return nil, fmt.Errorf("error opening TSI1 index %d: %s", shardId, err.Error())
 	}
 
-	return &seriesWriter{seriesBatchSize: seriesBatchSize, sfile: sfile, idx: ti}, nil
+	return &seriesWriter{seriesBatchSize: seriesBatchSize, sfile: sfile, idx: &tsi1Adapter{ti: ti}}, nil
 }
 
 func (sw *seriesWriter) AddSeries(key []byte) error {
@@ -69,6 +59,7 @@ func (sw *seriesWriter) Close() error {
 	if err := sw.idx.CreateSeriesListIfNotExists(sw.keys, sw.names, sw.tags); err != nil {
 		return err
 	}
+	sw.idx.Compact()
 	err := sw.idx.Close()
 	if err != nil {
 		return err
@@ -82,6 +73,7 @@ func (sw *seriesWriter) Close() error {
 
 type seriesIndex interface {
 	CreateSeriesListIfNotExists(keys [][]byte, names [][]byte, tagsSlice []models.Tags) (err error)
+	Compact() error
 	Close() error
 }
 
@@ -92,9 +84,39 @@ type seriesFileAdapter struct {
 
 func (s *seriesFileAdapter) CreateSeriesListIfNotExists(keys [][]byte, names [][]byte, tagsSlice []models.Tags) (err error) {
 	_, err = s.sf.CreateSeriesListIfNotExists(names, tagsSlice, s.buf[:0])
-	return
+	return err
+}
+
+func (s *seriesFileAdapter) Compact() error {
+	parts := s.sf.Partitions()
+	for i, p := range parts {
+		c := tsdb.NewSeriesPartitionCompactor()
+		if err := c.Compact(p); err != nil {
+			return fmt.Errorf("error compacting series partition %d: %s", i, err.Error())
+		}
+	}
+
+	return nil
 }
 
 func (s *seriesFileAdapter) Close() error {
 	return nil
+}
+
+type tsi1Adapter struct {
+	ti *tsi1.Index
+}
+
+func (t *tsi1Adapter) CreateSeriesListIfNotExists(keys [][]byte, names [][]byte, tagsSlice []models.Tags) (err error) {
+	return t.ti.CreateSeriesListIfNotExists(keys, names, tagsSlice)
+}
+
+func (t *tsi1Adapter) Compact() error {
+	t.ti.Compact()
+	t.ti.Wait()
+	return nil
+}
+
+func (t *tsi1Adapter) Close() error {
+	return t.ti.Close()
 }

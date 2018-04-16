@@ -11,13 +11,13 @@ import (
 type Profiler struct {
 	cpuProfile string
 	memProfile string
-	Stderr     io.Writer
+	stderr     io.Writer
 	cpu        *os.File
 	mem        *os.File
 }
 
 func NewProfiler(cpuProfile string, memProfile string, Stderr io.Writer) *Profiler {
-	return &Profiler{cpuProfile: cpuProfile, memProfile: memProfile, Stderr: Stderr}
+	return &Profiler{cpuProfile: cpuProfile, memProfile: memProfile, stderr: Stderr}
 }
 
 // StartProfile initializes the cpu and memory profile, if specified.
@@ -25,7 +25,7 @@ func (p *Profiler) StartProfile() {
 	if p.cpuProfile != "" {
 		f, err := os.Create(p.cpuProfile)
 		if err != nil {
-			fmt.Fprintf(p.Stderr, "cpuprofile: %v\n", err)
+			fmt.Fprintf(p.stderr, "cpuprofile: %v\n", err)
 			os.Exit(1)
 		}
 		p.cpu = f
@@ -35,7 +35,7 @@ func (p *Profiler) StartProfile() {
 	if p.memProfile != "" {
 		f, err := os.Create(p.memProfile)
 		if err != nil {
-			fmt.Fprintf(p.Stderr, "memprofile: %v\n", err)
+			fmt.Fprintf(p.stderr, "memprofile: %v\n", err)
 			os.Exit(1)
 		}
 		p.mem = f

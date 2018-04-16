@@ -28,6 +28,7 @@ type Importer struct {
 	rpi       *meta.RetentionPolicyInfo
 	log       *zap.Logger
 	sh        *shardWriter
+	sfile     *tsdb.SeriesFile
 	sw        *seriesWriter
 	buildTsi  bool
 	seriesBuf []byte
@@ -45,24 +46,11 @@ func NewImporter(client server.MetaClient, db string, dataDir string, buildTsi b
 
 func (i *Importer) Close() error {
 	defer i.CloseShardGroup()
-	err := i.CloseSeriesFile()
+	err := i.closeSeriesFile()
 	if err != nil {
 		return err
 	}
-	err = i.CloseShardGroup()
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (i *Importer) DropDatabase() error {
-	i.MetaClient.DropDatabase(i.db)
-	dbpath := filepath.Join(i.dataDir, i.db)
-	if err := os.RemoveAll(dbpath); err != nil {
-		return err
-	}
-	return nil
+	return i.CloseShardGroup()
 }
 
 func (i *Importer) CreateDatabase(rp *meta.RetentionPolicySpec, replace bool) error {
@@ -76,13 +64,34 @@ func (i *Importer) CreateDatabase(rp *meta.RetentionPolicySpec, replace bool) er
 	if err != nil {
 		return err
 	}
-	if rpi == nil || replace {
-		_, err := i.MetaClient.CreateRetentionPolicy(i.db, rp, false)
+
+	updateRp := (rpi != nil) && replace && ((rpi.Duration != *rp.Duration) || (rpi.ShardGroupDuration != rp.ShardGroupDuration))
+	if updateRp {
+		err = i.updateRetentionPolicy(rpi, rp)
+		if err != nil {
+			return err
+		}
+	} else {
+		_, err = i.MetaClient.CreateRetentionPolicy(i.db, rp, false)
 		if err != nil {
 			return err
 		}
 	}
+
 	return i.createDatabaseWithRetentionPolicy(rp)
+}
+
+func (i *Importer) updateRetentionPolicy(oldRpi *meta.RetentionPolicyInfo, newRp *meta.RetentionPolicySpec) error {
+	for _, shardGroup := range oldRpi.ShardGroups {
+		err := i.MetaClient.DeleteShardGroup(i.db, newRp.Name, shardGroup.ID)
+		if err != nil {
+			return err
+		}
+	}
+
+	rpu := &meta.RetentionPolicyUpdate{Name: &newRp.Name, Duration: newRp.Duration, ShardGroupDuration: &newRp.ShardGroupDuration}
+
+	return i.MetaClient.UpdateRetentionPolicy(i.db, newRp.Name, rpu, false)
 }
 
 func (i *Importer) createDatabaseWithRetentionPolicy(rp *meta.RetentionPolicySpec) error {
@@ -116,6 +125,8 @@ func (i *Importer) StartShardGroup(start int64, end int64) error {
 	}
 
 	i.sh = newShardWriter(sgi.ID, shardPath)
+
+	i.startSeriesFile()
 	return nil
 }
 
@@ -131,6 +142,12 @@ func (i *Importer) Write(key []byte, values tsm1.Values) error {
 }
 
 func (i *Importer) CloseShardGroup() error {
+	defer i.sh.Close()
+	err := i.closeSeriesFile()
+	if err != nil {
+		return err
+	}
+
 	i.sh.Close()
 	if i.sh.err != nil {
 		return i.sh.err
@@ -138,15 +155,20 @@ func (i *Importer) CloseShardGroup() error {
 	return nil
 }
 
-func (i *Importer) StartSeriesFile() error {
+func (i *Importer) startSeriesFile() error {
 	dataPath := filepath.Join(i.dataDir, i.db)
 	shardPath := filepath.Join(i.dataDir, i.db, i.rpi.Name)
 
+	i.sfile = tsdb.NewSeriesFile(filepath.Join(dataPath, tsdb.SeriesFileDirectory))
+	if err := i.sfile.Open(); err != nil {
+		return err
+	}
+
 	var err error
 	if i.buildTsi {
-		i.sw, err = NewTSI1SeriesWriter(i.db, dataPath, shardPath, int(i.sh.id))
+		i.sw, err = NewTSI1SeriesWriter(i.sfile, i.db, dataPath, shardPath, int(i.sh.id))
 	} else {
-		i.sw, err = NewInMemSeriesWriter(i.db, dataPath, shardPath, int(i.sh.id), i.seriesBuf)
+		i.sw, err = NewInMemSeriesWriter(i.sfile, i.db, dataPath, shardPath, int(i.sh.id), i.seriesBuf)
 	}
 
 	if err != nil {
@@ -159,6 +181,6 @@ func (i *Importer) AddSeries(seriesKey []byte) error {
 	return i.sw.AddSeries(seriesKey)
 }
 
-func (i *Importer) CloseSeriesFile() error {
+func (i *Importer) closeSeriesFile() error {
 	return i.sw.Close()
 }
